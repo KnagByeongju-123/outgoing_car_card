@@ -1026,6 +1026,17 @@ function deletePlace(idx){
   showToast(`즐겨찾기 삭제됨`);if(inlineEditPlaceIdx===idx)inlineEditPlaceIdx=null;render();
 }
 
+function movePlaceUp(idx){
+  if(idx<=0)return;
+  [registeredPlaces[idx-1],registeredPlaces[idx]]=[registeredPlaces[idx],registeredPlaces[idx-1]];
+  saveAll();render();
+}
+function movePlaceDown(idx){
+  if(idx>=registeredPlaces.length-1)return;
+  [registeredPlaces[idx],registeredPlaces[idx+1]]=[registeredPlaces[idx+1],registeredPlaces[idx]];
+  saveAll();render();
+}
+
 // 즐겨찾기 내보내기 (txt)
 function exportPlaces(){
   if(!registeredPlaces.length){showToast('❌ 등록된 즐겨찾기가 없습니다');return}
@@ -1042,6 +1053,58 @@ function exportPlaces(){
   URL.revokeObjectURL(url);
   showToast(`📤 ${registeredPlaces.length}개 즐겨찾기 내보내기 완료`);
 }
+
+// 즐겨찾기 txt → 배열 파싱 공통함수
+function parsePlacesTxt(text){
+  const imported=[];
+  text.split('\n').forEach(line=>{
+    if(!line.trim()||line.startsWith('#'))return;
+    const parts=line.split('\t');
+    if(parts[0]){
+      imported.push({
+        id:genId(),
+        name:parts[0].trim(),
+        address:(parts[1]||'').trim(),
+        lat:parseFloat(parts[2])||null,
+        lng:parseFloat(parts[3])||null
+      });
+    }
+  });
+  return imported;
+}
+
+// GitHub 서버 설정
+const GITHUB_REPO='KnagByeongju-123/outgoing_car_card';
+const GITHUB_FILE='즐겨찾기.txt';
+
+// 서버에서 불러오기 (GitHub raw)
+async function loadPlacesFromServer(){
+  try{
+    showToast('⏳ 서버에서 불러오는 중...');
+    const url=`https://raw.githubusercontent.com/${GITHUB_REPO}/main/${encodeURIComponent(GITHUB_FILE)}?t=${Date.now()}`;
+    const res=await fetch(url);
+    if(!res.ok)throw new Error(`${res.status}`);
+    const text=await res.text();
+    const imported=parsePlacesTxt(text);
+    if(!imported.length){showToast('❌ 서버에 즐겨찾기가 없습니다');return}
+    const mode=confirm(`서버에서 ${imported.length}개 즐겨찾기를 불러왔습니다.\n\n[확인] 기존에 추가 (병합)\n[취소] 기존 삭제 후 교체`);
+    if(mode){
+      imported.forEach(p=>{
+        const exist=registeredPlaces.findIndex(r=>r.name===p.name);
+        if(exist>=0)registeredPlaces[exist]={...registeredPlaces[exist],...p};
+        else registeredPlaces.push(p);
+      });
+    }else{
+      registeredPlaces=imported;
+    }
+    saveAll();render();
+    showToast(`📥 서버에서 ${imported.length}개 즐겨찾기 불러오기 완료`);
+  }catch(err){
+    if(err.message==='404')showToast('❌ 서버에 즐겨찾기 파일이 없습니다');
+    else showToast('❌ 서버 연결 실패: '+err.message);
+  }
+}
+
 
 // 즐겨찾기 가져오기 (txt)
 function importPlaces(event){
@@ -1683,6 +1746,79 @@ function exportCSV(){
   URL.revokeObjectURL(url);showToast('📥 CSV 다운로드 (감사로그 포함)');
 }
 
+// 전체 데이터 백업 (JSON)
+function exportAllData(){
+  const data={
+    version:1,
+    exportDate:new Date().toISOString(),
+    commuteRecords,
+    outsideRecords,
+    cardRecords,
+    registeredPlaces,
+    reportEmails,
+    auditLog
+  };
+  const json=JSON.stringify(data,null,2);
+  const blob=new Blob([json],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download=`외근차량카드관리대장_백업_${new Date().toISOString().slice(0,10)}.json`;a.click();
+  URL.revokeObjectURL(url);
+  const cnt=commuteRecords.length+outsideRecords.length+cardRecords.length;
+  showToast(`📤 전체 백업 완료 (${cnt}건)`);
+}
+
+// 전체 데이터 복원 (JSON)
+function importAllData(event){
+  const file=event.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const data=JSON.parse(e.target.result);
+      const cnt=(data.commuteRecords?.length||0)+(data.outsideRecords?.length||0)+(data.cardRecords?.length||0);
+      const msg=`백업 데이터 확인:\n`
+        +`- 출퇴근: ${data.commuteRecords?.length||0}건\n`
+        +`- 외근: ${data.outsideRecords?.length||0}건\n`
+        +`- 카드: ${data.cardRecords?.length||0}건\n`
+        +`- 즐겨찾기: ${data.registeredPlaces?.length||0}건\n\n`
+        +`[확인] 기존 데이터에 추가 (병합)\n[취소] 기존 삭제 후 교체`;
+      const merge=confirm(msg);
+      if(merge){
+        // 병합: id 중복 제거
+        const mergeArr=(existing,incoming)=>{
+          const ids=new Set(existing.map(r=>r.id));
+          return [...existing,...(incoming||[]).filter(r=>!ids.has(r.id))];
+        };
+        commuteRecords=mergeArr(commuteRecords,data.commuteRecords);
+        outsideRecords=mergeArr(outsideRecords,data.outsideRecords);
+        cardRecords=mergeArr(cardRecords,data.cardRecords);
+        if(data.registeredPlaces){
+          data.registeredPlaces.forEach(p=>{
+            const exist=registeredPlaces.findIndex(r=>r.name===p.name);
+            if(exist>=0)registeredPlaces[exist]={...registeredPlaces[exist],...p};
+            else registeredPlaces.push(p);
+          });
+        }
+      }else{
+        commuteRecords=data.commuteRecords||[];
+        outsideRecords=data.outsideRecords||[];
+        cardRecords=data.cardRecords||[];
+        registeredPlaces=data.registeredPlaces||[];
+        if(data.reportEmails)reportEmails=data.reportEmails;
+        if(data.auditLog)auditLog=data.auditLog;
+      }
+      saveAll();render();
+      addAudit('CREATE','backup','',`데이터 복원: ${cnt}건 (${merge?'병합':'교체'})`);
+      showToast(`📥 데이터 복원 완료 (${cnt}건)`);
+    }catch(err){
+      showToast('❌ 파일 형식 오류: JSON 백업 파일이 아닙니다');
+    }
+  };
+  reader.readAsText(file);
+  event.target.value='';
+}
+
 // ===== RENDER =====
 function render(){
   const area=document.getElementById('contentArea');
@@ -1704,6 +1840,8 @@ function render(){
             ${hasCoord?`<div style="font-size:9px;color:#6a6a8a;margin-top:2px">좌표: ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}</div>`:'<div style="font-size:9px;color:#ffb347;margin-top:2px">⚠️ 좌표 미등록 (GPS 등록 권장)</div>'}
           </div>
           <div class="place-chip-actions">
+            ${i>0?`<button onclick="movePlaceUp(${i})" title="위로" style="color:#93c5fd">▲</button>`:'<button style="visibility:hidden">▲</button>'}
+            ${i<registeredPlaces.length-1?`<button onclick="movePlaceDown(${i})" title="아래로" style="color:#93c5fd">▼</button>`:'<button style="visibility:hidden">▼</button>'}
             <button onclick="gpsRegisterPlace(${i})" title="현재 위치 등록" style="color:var(--green)">📍</button>
             <button onclick="startEditPlaceInline(${i})">✏️</button>
             <button onclick="deletePlace(${i})" style="color:#f87171">🗑</button>
@@ -1768,10 +1906,14 @@ function render(){
     h+=`<div style="margin-top:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:14px">`;
     h+=`<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px">📁 즐겨찾기 파일 관리</div>`;
     h+=`<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">다른 기기와 즐겨찾기 목록을 공유하거나 백업할 수 있습니다</div>`;
-    h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`;
-    h+=`<button class="submit-btn" style="flex:1;margin-top:0;font-size:12px" onclick="exportPlaces()">📤 내보내기</button>`;
-    h+=`<label class="submit-btn" style="flex:1;margin-top:0;font-size:12px;text-align:center;cursor:pointer;background:linear-gradient(135deg,rgba(52,168,83,0.6),rgba(34,139,34,0.5))">📥 가져오기<input type="file" accept=".txt,.json" style="display:none" onchange="importPlaces(event)"></label>`;
+    h+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">`;
+    h+=`<button class="submit-btn" style="flex:1;margin-top:0;font-size:12px" onclick="exportPlaces()">📤 파일 내보내기</button>`;
+    h+=`<label class="submit-btn" style="flex:1;margin-top:0;font-size:12px;text-align:center;cursor:pointer;background:linear-gradient(135deg,rgba(52,168,83,0.6),rgba(34,139,34,0.5))">📥 파일 가져오기<input type="file" accept=".txt,.json" style="display:none" onchange="importPlaces(event)"></label>`;
     h+=`</div>`;
+    h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`;
+    h+=`<button class="submit-btn" style="flex:1;margin-top:0;font-size:12px;background:linear-gradient(135deg,rgba(99,102,241,0.5),rgba(79,70,229,0.4))" onclick="loadPlacesFromServer()">🌐 서버에서 불러오기</button>`;
+    h+=`</div>`;
+    h+=`<div style="font-size:9px;color:#6a6a8a;margin-top:6px;text-align:center">GitHub에 등록된 즐겨찾기를 불러옵니다</div>`;
     h+=`</div>`;
     }
 
@@ -1825,6 +1967,17 @@ function render(){
     h+=`<button class="submit-btn" style="flex:1;margin-top:0;font-size:12px;background:linear-gradient(135deg,rgba(59,130,246,0.6),rgba(37,99,235,0.5))" onclick="downloadReportTxt()">📄 TXT 다운로드</button>`;
     h+=`</div>`;
     h+=`<div style="font-size:10px;color:#6a6a8a;margin-top:6px;text-align:center">CSV: 전체 데이터+감사로그 (엑셀) / TXT: 상세 보고서</div>`;
+    h+=`</div>`;
+
+    // 데이터 백업/복원
+    h+=`<div style="margin-top:16px;background:rgba(255,165,0,0.06);border:1px solid rgba(255,165,0,0.15);border-radius:16px;padding:16px">`;
+    h+=`<div style="font-size:14px;font-weight:700;color:#ffb347;margin-bottom:6px">💾 데이터 백업 / 복원</div>`;
+    h+=`<div style="font-size:11px;color:var(--text-dim);margin-bottom:10px">모든 기록(출퇴근·외근·카드·즐겨찾기)을 다른 기기로 옮길 수 있습니다</div>`;
+    h+=`<div style="display:flex;gap:8px;flex-wrap:wrap">`;
+    h+=`<button class="submit-btn" style="flex:1;margin-top:0;font-size:12px;background:linear-gradient(135deg,rgba(255,165,0,0.5),rgba(255,140,0,0.4))" onclick="exportAllData()">📤 전체 백업</button>`;
+    h+=`<label class="submit-btn" style="flex:1;margin-top:0;font-size:12px;text-align:center;cursor:pointer;background:linear-gradient(135deg,rgba(52,168,83,0.6),rgba(34,139,34,0.5))">📥 복원하기<input type="file" accept=".json" style="display:none" onchange="importAllData(event)"></label>`;
+    h+=`</div>`;
+    h+=`<div style="font-size:10px;color:#6a6a8a;margin-top:6px;text-align:center">백업 → JSON 파일 다운로드 → 다른 기기에서 복원하기</div>`;
     h+=`</div>`;
 
     area.innerHTML=h;
